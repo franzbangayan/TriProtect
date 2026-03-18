@@ -307,139 +307,228 @@
 </div>
 
 <script>
-  const NUM = 40;
-
-  function makeLabels() {
-    const labels = [];
-    let d = new Date(); d.setSeconds(d.getSeconds() - NUM * 2);
-    for (let i = 0; i < NUM; i++) { d = new Date(d.getTime() + 2000); labels.push(d.toTimeString().slice(0,8)); }
-    return labels;
-  }
-
-  function genData(base, amp, phase, noise = 0.5) {
-    return Array.from({ length: NUM }, (_, i) =>
-      +(base + amp * Math.sin((i / NUM) * 4 * Math.PI + phase) + (Math.random() - 0.5) * noise).toFixed(2)
-    );
-  }
-
-  const labels = makeLabels();
-
-  /* ── Gradient helper ── */
-  function grad(ctx, color) {
-    const g = ctx.createLinearGradient(0, 0, 0, 240);
-    g.addColorStop(0, color + '40');
-    g.addColorStop(1, color + '00');
-    return g;
-  }
-
-  const commonOpts = {
-    responsive: true, maintainAspectRatio: false,
-    interaction: { mode: 'index', intersect: false },
-    plugins: {
-      legend: { display: false },
-      tooltip: {
-        backgroundColor: '#0f172a', titleColor: '#94a3b8', bodyColor: '#f1f5f9',
-        padding: 10, borderColor: '#1e293b', borderWidth: 1,
-      }
-    },
-    scales: {
-      x: {
-        grid: { color: '#f1f5f8', drawBorder: false },
-        ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' }, maxTicksLimit: 10, maxRotation: 0 },
-        border: { display: false }
-      },
-      y: {
-        grid: { color: '#f1f5f8', drawBorder: false },
-        ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' } },
-        border: { display: false }
-      }
-    }
-  };
-
-  /* ── Temperature Chart ── */
-  const tCtx = document.getElementById('tempChart').getContext('2d');
-  const tA = genData(22.5, 1.2, 0, 0.4);
+  // --- CONFIG ---
+  const API_BASE = 'http://localhost:8000/api';
+  const NODE_ID  = 'ROOM_1_FIRE';
+  const NUM      = 40;
+  const POLL_MS  = 2000;
   const ALERT_TEMP = 35;
+  // --------------
 
-  const tempChart = new Chart(tCtx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        { label: 'Room M307 (°C)', data: tA, borderColor: '#ef4444', backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.4 },
-        { label: 'Alert Threshold', data: Array(NUM).fill(ALERT_TEMP), borderColor: '#9ca3af', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0, tension: 0 }
-      ]
-    },
-    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, min: 0, max: 36, ticks: { ...commonOpts.scales.y.ticks, stepSize: 9 } } } }
-  });
+  function hhmmss(dt) {
+    const d = new Date(dt);
+    return isNaN(d.getTime()) ? new Date().toTimeString().slice(0,8) : d.toTimeString().slice(0,8);
+  }
+  function pushCapped(arr, v, cap) { arr.push(v); if (arr.length > cap) arr.shift(); }
 
-  /* ── Humidity Chart ── */
-  const hCtx = document.getElementById('humChart').getContext('2d');
-  const hData = genData(52, 5, 0, 1.5);
-
-  const humChart = new Chart(hCtx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Humidity (%)',
-        data: hData,
-        borderColor: '#06b6d4',
-        backgroundColor: grad(hCtx, '#06b6d4'),
-        borderWidth: 2, pointRadius: 0, tension: 0.4, fill: true
-      }]
-    },
-    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, min: 0, max: 100, ticks: { ...commonOpts.scales.y.ticks, stepSize: 25 } } } }
-  });
-
-  /* ── Gas Level Chart ── */
-  const gCtx = document.getElementById('gasChart').getContext('2d');
-  const gData = genData(125, 18, 0, 4);
-
-  const gasChart = new Chart(gCtx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Gas Level (PPM)',
-        data: gData,
-        borderColor: '#a855f7',
-        backgroundColor: grad(gCtx, '#a855f7'),
-        borderWidth: 2, pointRadius: 0, tension: 0.4, fill: true,
-        borderDash: [5, 3]
-      }]
-    },
-    options: { ...commonOpts, scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, min: 0, max: 160, ticks: { ...commonOpts.scales.y.ticks, stepSize: 40 } } } }
-  });
-
-  /* ── Live Updates ── */
-  function nextVal(arr, base, amp, phase, noise) {
-    const v = +(base + amp * Math.sin(Date.now() / 1500 + phase) + (Math.random() - 0.5) * noise).toFixed(2);
-    arr.push(v); arr.shift(); return v;
+  async function fetchFire(limit) {
+    const url = `${API_BASE}/fire/?node_id=${encodeURIComponent(NODE_ID)}&limit=${limit}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`Fire fetch failed: ${res.status}`);
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : (rows.results || []);
   }
 
-  setInterval(() => {
-    const now = new Date().toTimeString().slice(0, 8);
+  function updateKpis(row) {
+    if (!row) return;
+    const t = Number(row.temperature);
+    const h = Number(row.humidity);
+    const g = Number(row.gas_level);
 
-    // temperature
-    tempChart.data.labels.push(now); tempChart.data.labels.shift();
-    const tv = nextVal(tempChart.data.datasets[0].data, 22.5, 1.2, 0, 0.4);
-    tempChart.update('none');
-    document.getElementById('val-temp').textContent = tv + '°C';
+    const elT = document.getElementById('val-temp');
+    const elH = document.getElementById('val-hum');
+    const elG = document.getElementById('val-gas');
+    if (elT) elT.textContent = `${t.toFixed(1)}°C`;
+    if (elH) elH.textContent = `${Math.round(h)}%`;
+    if (elG) elG.textContent = `${Math.round(g)} PPM`;
+  }
 
-    // humidity
-    humChart.data.labels.push(now); humChart.data.labels.shift();
-    const hv = nextVal(humChart.data.datasets[0].data, 52, 5, 0, 1.5);
-    humChart.update('none');
-    document.getElementById('val-hum').textContent = Math.round(hv) + '%';
+  // Data arrays
+  const labels     = [];
+  const seriesTemp = [];
+  const seriesHum  = [];
+  const seriesGas  = [];
+  let lastId = null;
 
-    // gas
-    gasChart.data.labels.push(now); gasChart.data.labels.shift();
-    const gv = nextVal(gasChart.data.datasets[0].data, 125, 18, 0, 4);
-    gasChart.update('none');
-    document.getElementById('val-gas').textContent = Math.round(gv) + ' PPM';
+  let tempChart, humChart, gasChart;
 
-  }, 2000);
+  function createCharts() {
+    function grad(ctx, color) {
+      const g = ctx.createLinearGradient(0, 0, 0, 240);
+      g.addColorStop(0, color + '40');
+      g.addColorStop(1, color + '00');
+      return g;
+    }
+
+    // Common options with animations disabled
+    const commonOptsNoAnim = {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      animation: { duration: 0 },             // disable initial animation
+      animations: {                           // hard-disable specific anims
+        x: false, y: false, colors: false,
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f172a', titleColor: '#94a3b8', bodyColor: '#f1f5f9',
+          padding: 10, borderColor: '#1e293b', borderWidth: 1,
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: '#f1f5f8', drawBorder: false },
+          ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' }, maxTicksLimit: 10, maxRotation: 0 },
+          border: { display: false }
+        },
+        y: {
+          grid: { color: '#f1f5f8', drawBorder: false },
+          ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' } },
+          border: { display: false }
+        }
+      }
+    };
+
+    // Temperature
+    const tCtx = document.getElementById('tempChart').getContext('2d');
+    tempChart = new Chart(tCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          { label: 'Room M307 (°C)', data: seriesTemp, borderColor: '#ef4444',
+            backgroundColor: grad(tCtx, '#ef4444'), borderWidth: 1.8, pointRadius: 0, tension: 0.4, fill: true },
+          { label: 'Alert Threshold', data: Array.from({length: labels.length}, () => ALERT_TEMP),
+            borderColor: '#9ca3af', backgroundColor: 'transparent', borderWidth: 1.5, borderDash: [6, 4], pointRadius: 0, tension: 0 }
+        ]
+      },
+      options: {
+        ...commonOptsNoAnim,
+        scales: {
+          ...commonOptsNoAnim.scales,
+          y: { ...commonOptsNoAnim.scales.y, min: 0, max: 36, ticks: { ...commonOptsNoAnim.scales.y.ticks, stepSize: 9 } }
+        }
+      }
+    });
+
+    // Humidity
+    const hCtx = document.getElementById('humChart').getContext('2d');
+    humChart = new Chart(hCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Humidity (%)',
+          data: seriesHum,
+          borderColor: '#06b6d4',
+          backgroundColor: grad(hCtx, '#06b6d4'),
+          borderWidth: 2, pointRadius: 0, tension: 0.4, fill: true
+        }]
+      },
+      options: {
+        ...commonOptsNoAnim,
+        scales: {
+          ...commonOptsNoAnim.scales,
+          y: { ...commonOptsNoAnim.scales.y, min: 0, max: 100, ticks: { ...commonOptsNoAnim.scales.y.ticks, stepSize: 25 } }
+        }
+      }
+    });
+
+    // Gas
+    const gCtx = document.getElementById('gasChart').getContext('2d');
+    gasChart = new Chart(gCtx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: 'Gas Level (PPM)',
+          data: seriesGas,
+          borderColor: '#a855f7',
+          backgroundColor: grad(gCtx, '#a855f7'),
+          borderWidth: 2, pointRadius: 0, tension: 0.4, fill: true,
+          borderDash: [5, 3]
+        }]
+      },
+      options: {
+        ...commonOptsNoAnim,
+        scales: {
+          ...commonOptsNoAnim.scales,
+          y: { ...commonOptsNoAnim.scales.y, min: 0, max: 160, ticks: { ...commonOptsNoAnim.scales.y.ticks, stepSize: 40 } }
+        }
+      }
+    });
+  }
+
+  function syncAlertLine() {
+    if (!tempChart) return;
+    const thresholdData = tempChart.data.datasets[1].data;
+    thresholdData.length = 0;
+    for (let i = 0; i < labels.length; i++) thresholdData.push(ALERT_TEMP);
+  }
+
+  async function initWithHistory() {
+    const rows = await fetchFire(NUM);
+    const ordered = rows.slice().reverse(); // oldest -> newest
+
+    labels.length = 0; seriesTemp.length = 0; seriesHum.length = 0; seriesGas.length = 0;
+
+    for (const r of ordered) {
+      const ts = r.source_ts || r.created_at;
+      pushCapped(labels, hhmmss(ts), NUM);
+      pushCapped(seriesTemp, Number(r.temperature), NUM);
+      pushCapped(seriesHum , Number(r.humidity), NUM);
+      pushCapped(seriesGas , Number(r.gas_level), NUM);
+      lastId = r.id;
+    }
+
+    while (labels.length < NUM) {
+      labels.unshift('--:--:--'); seriesTemp.unshift(null); seriesHum.unshift(null); seriesGas.unshift(null);
+    }
+
+    updateKpis(rows[0]);
+  }
+
+  async function pollLatestAndAppend() {
+    try {
+      const rows = await fetchFire(1);
+      const newest = rows[0];
+      if (!newest) return;
+      if (lastId !== null && newest.id === lastId) return;
+      lastId = newest.id;
+
+      const ts = newest.source_ts || newest.created_at;
+      pushCapped(labels, hhmmss(ts), NUM);
+      pushCapped(seriesTemp, Number(newest.temperature), NUM);
+      pushCapped(seriesHum , Number(newest.humidity), NUM);
+      pushCapped(seriesGas , Number(newest.gas_level), NUM);
+
+      updateKpis(newest);
+      syncAlertLine();
+
+      // Skip animation on updates
+      tempChart.update('none');
+      humChart.update('none');
+      gasChart.update('none');
+    } catch (err) {
+      console.warn('fire poll error:', err.message);
+    }
+  }
+
+  (async function start() {
+    try {
+      await initWithHistory();
+      createCharts();       // build charts AFTER history is ready (no fake series)
+      syncAlertLine();
+      tempChart.update('none');
+      humChart.update('none');
+      gasChart.update('none');
+      setInterval(pollLatestAndAppend, POLL_MS);
+    } catch (err) {
+      console.error('Fire page init error:', err);
+    }
+  })();
 </script>
+
 </body>
 </html>

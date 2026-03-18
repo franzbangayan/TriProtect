@@ -296,40 +296,24 @@
 </div>
 
 <script>
-  /* ── Chart setup ── */
+  // --- CONFIG ---
+  const EL_API = 'http://localhost:8000/api/electrical/';
+  const EL_NODE_ID = 'ROOM_1_ELEC';  // change to your node if needed
+  const EL_NUM = 40;                 // points visible
+  const EL_POLL_MS = 2000;           // 2s polling
+  // --------------
+
+  function hhmmss(dt) {
+    const d = new Date(dt);
+    return isNaN(d.getTime()) ? new Date().toTimeString().slice(0,8) : d.toTimeString().slice(0,8);
+  }
+  function pushCapped(arr, v, cap) { arr.push(v); if (arr.length > cap) arr.shift(); }
+
+  // Create a minimal single-series chart (reuse your canvas)
   const ctx = document.getElementById('currentChart').getContext('2d');
 
-  const NUM_POINTS = 40;
-
-  function generateCurrentData(base, amp, phase) {
-    return Array.from({ length: NUM_POINTS }, (_, i) =>
-      +(base + amp * Math.sin((i / NUM_POINTS) * 4 * Math.PI + phase) +
-        (Math.random() - 0.5) * 1.5).toFixed(2)
-    );
-  }
-
-  function generateLabels() {
-    const labels = [];
-    let d = new Date();
-    d.setSeconds(d.getSeconds() - NUM_POINTS * 2);
-    for (let i = 0; i < NUM_POINTS; i++) {
-      d = new Date(d.getTime() + 2000);
-      labels.push(d.toTimeString().slice(0, 8));
-    }
-    return labels;
-  }
-
-  const labels = generateLabels();
-  const p1 = generateCurrentData(17, 2.5, 0);
-  const p2 = generateCurrentData(17, 2.5, 2.1);
-  const p3 = generateCurrentData(17, 2.5, 4.2);
-
-  const makeGradient = (color) => {
-    const g = ctx.createLinearGradient(0, 0, 0, 260);
-    g.addColorStop(0, color + '30');
-    g.addColorStop(1, color + '00');
-    return g;
-  };
+  const labels = [];
+  const ampsData = [];
 
   const chart = new Chart(ctx, {
     type: 'line',
@@ -337,35 +321,20 @@
       labels,
       datasets: [
         {
-          label: 'Phase 1 (A)',
-          data: p1,
+          label: 'Current (A)',
+          data: ampsData,
           borderColor: '#3b82f6',
-          backgroundColor: makeGradient('#3b82f6'),
+          backgroundColor: (() => {
+            const g = ctx.createLinearGradient(0, 0, 0, 260);
+            g.addColorStop(0, '#3b82f630'); // blue with alpha
+            g.addColorStop(1, '#3b82f600');
+            return g;
+          })(),
           borderWidth: 2,
           pointRadius: 0,
           tension: 0.4,
           fill: true,
-        },
-        {
-          label: 'Phase 2 (A)',
-          data: p2,
-          borderColor: '#f97316',
-          backgroundColor: makeGradient('#f97316'),
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.4,
-          fill: true,
-        },
-        {
-          label: 'Phase 3 (A)',
-          data: p3,
-          borderColor: '#22c55e',
-          backgroundColor: makeGradient('#22c55e'),
-          borderWidth: 2,
-          pointRadius: 0,
-          tension: 0.4,
-          fill: true,
-        },
+        }
       ]
     },
     options: {
@@ -381,50 +350,91 @@
           padding: 10,
           borderColor: '#1e293b',
           borderWidth: 1,
-          callbacks: {
-            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y} A`
-          }
+          callbacks: { label: c => ` ${c.dataset.label}: ${c.parsed.y} A` }
         }
       },
       scales: {
         x: {
           grid: { color: '#f1f5f9', drawBorder: false },
-          ticks: {
-            color: '#94a3b8', font: { size: 11, family: 'DM Mono' },
-            maxTicksLimit: 10, maxRotation: 0
-          },
+          ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' }, maxTicksLimit: 10, maxRotation: 0 },
           border: { display: false }
         },
         y: {
-          min: 12, max: 22,
+          // You can adjust these bounds if needed based on your amps range
+          suggestedMin: 0,
+          // suggestedMax: 20,
           grid: { color: '#f1f5f9', drawBorder: false },
-          ticks: {
-            color: '#94a3b8', font: { size: 11, family: 'DM Mono' },
-            stepSize: 2
-          },
+          ticks: { color: '#94a3b8', font: { size: 11, family: 'DM Mono' } },
           border: { display: false }
         }
       }
     }
   });
 
-  /* ── Live update simulation ── */
-  setInterval(() => {
-    const now = new Date().toTimeString().slice(0, 8);
-    chart.data.labels.push(now);
-    chart.data.labels.shift();
+  let elLastId = null;
 
-    const addPoint = (arr, base, amp, phase) => {
-      const next = +(base + amp * Math.sin(Date.now() / 1500 + phase) + (Math.random() - 0.5) * 1.5).toFixed(2);
-      arr.push(next); arr.shift();
-    };
+  async function fetchElectrical(limit) {
+    const url = `${EL_API}?node_id=${encodeURIComponent(EL_NODE_ID)}&limit=${limit}`;
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error('Electrical fetch failed ' + res.status);
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : (rows.results || []);
+  }
 
-    addPoint(chart.data.datasets[0].data, 17, 2.5, 0);
-    addPoint(chart.data.datasets[1].data, 17, 2.5, 2.1);
-    addPoint(chart.data.datasets[2].data, 17, 2.5, 4.2);
+  function updateElKpis(row) {
+    // If you add a KPI element, e.g. <div id="val-amps"></div>, update here:
+    // document.getElementById('val-amps').textContent = `${Number(row.amps).toFixed(2)} A`;
+  }
 
-    chart.update('none');
-  }, 2000);
+  async function initElWithHistory() {
+    try {
+      const rows = await fetchElectrical(EL_NUM);
+      const ordered = rows.slice().reverse();
+
+      labels.length = 0; ampsData.length = 0;
+
+      for (const r of ordered) {
+        const ts = r.source_ts || r.created_at;
+        pushCapped(labels, hhmmss(ts), EL_NUM);
+        pushCapped(ampsData, Number(r.amps), EL_NUM);
+        elLastId = r.id;
+      }
+
+      while (labels.length < EL_NUM) {
+        labels.unshift('--:--:--'); ampsData.unshift(null);
+      }
+
+      updateElKpis(rows[0]);
+      chart.update('none');
+    } catch (err) {
+      console.error('initElWithHistory error:', err);
+    }
+  }
+
+  async function pollElLatestAndAppend() {
+    try {
+      const rows = await fetchElectrical(1);
+      const newest = rows[0];
+      if (!newest) return;
+      if (elLastId !== null && newest.id === elLastId) return;
+
+      elLastId = newest.id;
+      const ts = newest.source_ts || newest.created_at;
+      pushCapped(labels, hhmmss(ts), EL_NUM);
+      pushCapped(ampsData, Number(newest.amps), EL_NUM);
+
+      updateElKpis(newest);
+      chart.update('none');
+    } catch (err) {
+      console.warn('el poll error:', err.message);
+    }
+  }
+
+  (async function startElectrical() {
+    await initElWithHistory();
+    setInterval(pollElLatestAndAppend, EL_POLL_MS);
+  })();
 </script>
+
 </body>
 </html>
